@@ -18,6 +18,14 @@ class LoginTemplateLocaleTestCase(TestCase):
         self.assertNotContains(response, 'dir="rtl"')
 
     def test_hebrew_login_po_catalog_has_translated_auth_strings(self):
+        fir_auth_2fa_spec = importlib.util.find_spec("fir_auth_2fa")
+        self.assertIsNotNone(fir_auth_2fa_spec, "Unable to locate fir_auth_2fa module")
+        fir_auth_2fa_locations = getattr(fir_auth_2fa_spec, "submodule_search_locations", None)
+        self.assertTrue(
+            fir_auth_2fa_locations,
+            "Unable to resolve fir_auth_2fa module directory",
+        )
+
         catalogs = [
             (
                 Path(__file__).resolve().parent / "locale" / "he" / "LC_MESSAGES" / "django.po",
@@ -30,7 +38,7 @@ class LoginTemplateLocaleTestCase(TestCase):
                 },
             ),
             (
-                Path(importlib.util.find_spec("fir_auth_2fa").submodule_search_locations[0])
+                Path(fir_auth_2fa_locations[0])
                 / "locale"
                 / "he"
                 / "LC_MESSAGES"
@@ -69,10 +77,10 @@ msgid_plural "items"
 msgstr[0] "פריט"
 msgstr[1] "פריטים"
 """
-        with tempfile.NamedTemporaryFile("w+", encoding="utf-8", suffix=".po") as po_file:
-            po_file.write(po_content)
-            po_file.flush()
-            entries = self._parse_po_entries(Path(po_file.name))
+        with tempfile.TemporaryDirectory() as temp_dir:
+            po_path = Path(temp_dir) / "test.po"
+            po_path.write_text(po_content, encoding="utf-8")
+            entries = self._parse_po_entries(po_path)
 
         self.assertEqual(entries["Back"], "חזרה")
         self.assertEqual(entries["item"], "פריט")
@@ -81,11 +89,11 @@ msgstr[1] "פריטים"
     @staticmethod
     def _parse_po_entries(path):
         entries = {}
-        msgctxt = None
         msgid = None
         msgid_plural = None
         msgstr = {}
         mode = None
+        current_msgstr_index = None
 
         def _decode_po_line(line):
             line = line.strip()
@@ -109,7 +117,6 @@ msgstr[1] "פריטים"
             if line.startswith("#"):
                 continue
             if line.startswith("msgctxt "):
-                msgctxt = _decode_po_line(line[7:].strip())
                 mode = "msgctxt"
                 continue
             if line.startswith("msgid "):
@@ -119,43 +126,47 @@ msgstr[1] "פריטים"
                 msgid_plural = None
                 msgstr = {}
                 mode = "msgid"
+                current_msgstr_index = None
                 continue
             if line.startswith("msgid_plural "):
                 msgid_plural = _decode_po_line(line[12:].strip())
                 mode = "msgid_plural"
+                current_msgstr_index = None
                 continue
             if line.startswith("msgstr["):
                 index_end = line.find("]")
                 if index_end == -1:
                     continue
-                index = int(line[7:index_end])
+                try:
+                    index = int(line[7:index_end])
+                except ValueError:
+                    continue
                 msgstr[index] = _decode_po_line(line[index_end + 1 :].strip())
-                mode = f"msgstr[{index}]"
+                mode = "msgstr_plural"
+                current_msgstr_index = index
                 continue
             if line.startswith("msgstr "):
                 msgstr["single"] = _decode_po_line(line[6:].strip())
                 mode = "msgstr"
+                current_msgstr_index = None
                 continue
             if line.startswith('"') and line.endswith('"'):
-                if mode == "msgctxt" and msgctxt is not None:
-                    msgctxt += _decode_po_line(line)
-                elif mode == "msgid" and msgid is not None:
+                if mode == "msgid" and msgid is not None:
                     msgid += _decode_po_line(line)
                 elif mode == "msgid_plural" and msgid_plural is not None:
                     msgid_plural += _decode_po_line(line)
                 elif mode == "msgstr":
                     msgstr["single"] = msgstr.get("single", "") + _decode_po_line(line)
-                elif mode and mode.startswith("msgstr["):
-                    index = int(mode[7:-1])
-                    msgstr[index] = msgstr.get(index, "") + _decode_po_line(line)
+                elif mode == "msgstr_plural" and current_msgstr_index is not None:
+                    msgstr[current_msgstr_index] = msgstr.get(current_msgstr_index, "") + _decode_po_line(line)
                 continue
             if line == "" and msgid is not None:
                 _store_entry()
-                msgctxt = None
                 msgid = None
                 msgid_plural = None
                 msgstr = {}
                 mode = None
+                current_msgstr_index = None
 
         if msgid is not None:
             _store_entry()
